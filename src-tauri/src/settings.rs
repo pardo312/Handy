@@ -430,6 +430,10 @@ pub struct AppSettings {
     pub whisper_gpu_device: i32,
     #[serde(default)]
     pub extra_recording_buffer_ms: u64,
+    #[serde(default)]
+    pub dictation_mode: bool,
+    #[serde(default = "default_dictation_silence_ms")]
+    pub dictation_silence_ms: u64,
 }
 
 fn default_model() -> String {
@@ -640,6 +644,10 @@ fn default_whisper_gpu_device() -> i32 {
     -1 // auto
 }
 
+fn default_dictation_silence_ms() -> u64 {
+    2000
+}
+
 fn default_typing_tool() -> TypingTool {
     TypingTool::Auto
 }
@@ -804,6 +812,8 @@ pub fn get_default_settings() -> AppSettings {
         ort_accelerator: OrtAcceleratorSetting::default(),
         whisper_gpu_device: default_whisper_gpu_device(),
         extra_recording_buffer_ms: 0,
+        dictation_mode: false,
+        dictation_silence_ms: default_dictation_silence_ms(),
     }
 }
 

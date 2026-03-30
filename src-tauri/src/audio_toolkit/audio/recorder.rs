@@ -1,7 +1,7 @@
 use std::{
     io::Error,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
     },
     time::Duration,
@@ -22,6 +22,7 @@ use crate::audio_toolkit::{
 enum Cmd {
     Start,
     Stop(mpsc::Sender<Vec<f32>>),
+    Drain(mpsc::Sender<Vec<f32>>),
     Shutdown,
 }
 
@@ -36,6 +37,7 @@ pub struct AudioRecorder {
     worker_handle: Option<std::thread::JoinHandle<()>>,
     vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
+    consecutive_silence_frames: Arc<AtomicUsize>,
 }
 
 impl AudioRecorder {
@@ -46,6 +48,7 @@ impl AudioRecorder {
             worker_handle: None,
             vad: None,
             level_cb: None,
+            consecutive_silence_frames: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -81,8 +84,8 @@ impl AudioRecorder {
 
         let thread_device = device.clone();
         let vad = self.vad.clone();
-        // Move the optional level callback into the worker thread
         let level_cb = self.level_cb.clone();
+        let silence_frames = self.consecutive_silence_frames.clone();
 
         let worker = std::thread::spawn(move || {
             let stop_flag = Arc::new(AtomicBool::new(false));
@@ -158,8 +161,7 @@ impl AudioRecorder {
             match init_result {
                 Ok((stream, sample_rate)) => {
                     let _ = init_tx.send(Ok(()));
-                    // Keep the stream alive while we process samples.
-                    run_consumer(sample_rate, vad, sample_rx, cmd_rx, level_cb, stop_flag);
+                    run_consumer(sample_rate, vad, sample_rx, cmd_rx, level_cb, stop_flag, silence_frames);
                     drop(stream);
                 }
                 Err(error_message) => {
@@ -207,7 +209,19 @@ impl AudioRecorder {
         if let Some(tx) = &self.cmd_tx {
             tx.send(Cmd::Stop(resp_tx))?;
         }
-        Ok(resp_rx.recv()?) // wait for the samples
+        Ok(resp_rx.recv()?)
+    }
+
+    pub fn drain(&self) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let (resp_tx, resp_rx) = mpsc::channel();
+        if let Some(tx) = &self.cmd_tx {
+            tx.send(Cmd::Drain(resp_tx))?;
+        }
+        Ok(resp_rx.recv()?)
+    }
+
+    pub fn consecutive_silence_frames(&self) -> usize {
+        self.consecutive_silence_frames.load(Ordering::Relaxed)
     }
 
     pub fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -399,6 +413,7 @@ fn run_consumer(
     cmd_rx: mpsc::Receiver<Cmd>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     stop_flag: Arc<AtomicBool>,
+    silence_frames: Arc<AtomicUsize>,
 ) {
     let mut frame_resampler = FrameResampler::new(
         in_sample_rate as usize,
@@ -425,6 +440,7 @@ fn run_consumer(
         recording: bool,
         vad: &Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
         out_buf: &mut Vec<f32>,
+        silence_frames: &Arc<AtomicUsize>,
     ) {
         if !recording {
             return;
@@ -433,8 +449,13 @@ fn run_consumer(
         if let Some(vad_arc) = vad {
             let mut det = vad_arc.lock().unwrap();
             match det.push_frame(samples).unwrap_or(VadFrame::Speech(samples)) {
-                VadFrame::Speech(buf) => out_buf.extend_from_slice(buf),
-                VadFrame::Noise => {}
+                VadFrame::Speech(buf) => {
+                    silence_frames.store(0, Ordering::Relaxed);
+                    out_buf.extend_from_slice(buf);
+                }
+                VadFrame::Noise => {
+                    silence_frames.fetch_add(1, Ordering::Relaxed);
+                }
             }
         } else {
             out_buf.extend_from_slice(samples);
@@ -461,7 +482,7 @@ fn run_consumer(
 
         // ---------- existing pipeline ------------------------------------ //
         frame_resampler.push(&raw, &mut |frame: &[f32]| {
-            handle_frame(frame, recording, &vad, &mut processed_samples)
+            handle_frame(frame, recording, &vad, &mut processed_samples, &silence_frames)
         });
 
         // non-blocking check for a command
@@ -472,6 +493,7 @@ fn run_consumer(
                     processed_samples.clear();
                     recording = true;
                     visualizer.reset();
+                    silence_frames.store(0, Ordering::Relaxed);
                     if let Some(v) = &vad {
                         v.lock().unwrap().reset();
                     }
@@ -488,7 +510,7 @@ fn run_consumer(
                         match sample_rx.recv_timeout(Duration::from_secs(2)) {
                             Ok(AudioChunk::Samples(remaining)) => {
                                 frame_resampler.push(&remaining, &mut |frame: &[f32]| {
-                                    handle_frame(frame, true, &vad, &mut processed_samples)
+                                    handle_frame(frame, true, &vad, &mut processed_samples, &silence_frames)
                                 });
                             }
                             Ok(AudioChunk::EndOfStream) => break,
@@ -500,7 +522,7 @@ fn run_consumer(
                     }
 
                     frame_resampler.finish(&mut |frame: &[f32]| {
-                        handle_frame(frame, true, &vad, &mut processed_samples)
+                        handle_frame(frame, true, &vad, &mut processed_samples, &silence_frames)
                     });
 
                     let _ = reply_tx.send(std::mem::take(&mut processed_samples));
@@ -508,6 +530,14 @@ fn run_consumer(
                     // Resume the audio callback so the consumer loop can continue
                     // receiving chunks (important for always-on microphone mode).
                     stop_flag.store(false, Ordering::Relaxed);
+                }
+                Cmd::Drain(reply_tx) => {
+                    let drained = if recording {
+                        std::mem::take(&mut processed_samples)
+                    } else {
+                        Vec::new()
+                    };
+                    let _ = reply_tx.send(drained);
                 }
                 Cmd::Shutdown => {
                     stop_flag.store(true, Ordering::Relaxed);

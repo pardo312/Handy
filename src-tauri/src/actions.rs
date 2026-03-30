@@ -16,8 +16,9 @@ use ferrous_opencc::{config::BuiltinConfig, OpenCC};
 use log::{debug, error, warn};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
@@ -47,6 +48,7 @@ pub trait ShortcutAction: Send + Sync {
 // Transcribe Action
 struct TranscribeAction {
     post_process: bool,
+    dictation_active: Arc<AtomicBool>,
 }
 
 /// Field name for structured output JSON schema
@@ -433,8 +435,20 @@ impl ShortcutAction for TranscribeAction {
         }
 
         if recording_error.is_none() {
-            // Dynamically register the cancel shortcut in a separate task to avoid deadlock
             shortcut::register_cancel_shortcut(app);
+
+            let settings_check = get_settings(app);
+            if settings_check.dictation_mode {
+                self.dictation_active.store(true, Ordering::SeqCst);
+                let ah = app.clone();
+                let binding = binding_id.clone();
+                let active = self.dictation_active.clone();
+                let silence_ms = settings_check.dictation_silence_ms;
+
+                std::thread::spawn(move || {
+                    run_dictation_loop(ah, binding, active, silence_ms);
+                });
+            }
         } else {
             // Starting failed (for example due to blocked microphone permissions).
             // Revert UI state so we don't stay stuck in the recording overlay.
@@ -465,8 +479,18 @@ impl ShortcutAction for TranscribeAction {
     }
 
     fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
-        // Unregister the cancel shortcut when transcription stops
         shortcut::unregister_cancel_shortcut(app);
+
+        if self.dictation_active.load(Ordering::SeqCst) {
+            debug!("Dictation stop signalled for binding: {}", binding_id);
+            self.dictation_active.store(false, Ordering::SeqCst);
+            change_tray_icon(app, TrayIconState::Transcribing);
+            show_transcribing_overlay(app);
+            let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
+            rm.remove_mute();
+            play_feedback_sound(app, SoundType::Stop);
+            return;
+        }
 
         let stop_time = Instant::now();
         debug!("TranscribeAction::stop called for binding: {}", binding_id);
@@ -632,6 +656,93 @@ impl ShortcutAction for TranscribeAction {
     }
 }
 
+const DICTATION_MIN_SAMPLES: usize = 16000;
+
+const VAD_FRAME_MS: u64 = 30;
+const DICTATION_POLL_MS: u64 = 50;
+
+fn run_dictation_loop(
+    app: AppHandle,
+    binding_id: String,
+    active: Arc<AtomicBool>,
+    silence_ms: u64,
+) {
+    let _guard = FinishGuard(app.clone());
+    let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
+    let tm = Arc::clone(&app.state::<Arc<TranscriptionManager>>());
+
+    let silence_threshold_frames = (silence_ms / VAD_FRAME_MS) as usize;
+    let mut first_chunk = true;
+    let mut had_speech = false;
+
+    while active.load(Ordering::SeqCst) && rm.is_recording() {
+        std::thread::sleep(Duration::from_millis(DICTATION_POLL_MS));
+
+        if !active.load(Ordering::SeqCst) || !rm.is_recording() {
+            break;
+        }
+
+        let silence_frames = rm.consecutive_silence_frames();
+
+        if silence_frames == 0 {
+            had_speech = true;
+            continue;
+        }
+
+        if !had_speech || silence_frames < silence_threshold_frames {
+            continue;
+        }
+
+        if let Some(samples) = rm.drain_samples() {
+            if dictate_chunk(&app, &tm, samples, !first_chunk) {
+                first_chunk = false;
+            }
+        }
+        had_speech = false;
+    }
+
+    active.store(false, Ordering::SeqCst);
+    let _ = rm.stop_recording(&binding_id);
+    utils::hide_recording_overlay(&app);
+    change_tray_icon(&app, TrayIconState::Idle);
+}
+
+fn dictate_chunk(
+    app: &AppHandle,
+    tm: &TranscriptionManager,
+    mut samples: Vec<f32>,
+    prepend_space: bool,
+) -> bool {
+    if samples.is_empty() {
+        return false;
+    }
+
+    if samples.len() < DICTATION_MIN_SAMPLES {
+        samples.resize(DICTATION_MIN_SAMPLES * 5 / 4, 0.0);
+    }
+
+    match tm.transcribe(samples) {
+        Ok(text) if !text.is_empty() => {
+            debug!("Dictation chunk: '{}'", text);
+            let final_text = if prepend_space {
+                format!(" {}", text)
+            } else {
+                text
+            };
+            let ah = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let _ = utils::paste(final_text, ah);
+            });
+            true
+        }
+        Ok(_) => false,
+        Err(e) => {
+            debug!("Dictation transcription error: {}", e);
+            false
+        }
+    }
+}
+
 // Cancel Action
 struct CancelAction;
 
@@ -675,11 +786,15 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
         "transcribe".to_string(),
         Arc::new(TranscribeAction {
             post_process: false,
+            dictation_active: Arc::new(AtomicBool::new(false)),
         }) as Arc<dyn ShortcutAction>,
     );
     map.insert(
         "transcribe_with_post_process".to_string(),
-        Arc::new(TranscribeAction { post_process: true }) as Arc<dyn ShortcutAction>,
+        Arc::new(TranscribeAction {
+            post_process: true,
+            dictation_active: Arc::new(AtomicBool::new(false)),
+        }) as Arc<dyn ShortcutAction>,
     );
     map.insert(
         "cancel".to_string(),

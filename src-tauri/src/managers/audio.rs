@@ -477,6 +477,32 @@ impl AudioRecordingManager {
             _ => None,
         }
     }
+    pub fn drain_samples(&self) -> Option<Vec<f32>> {
+        if !*self.is_recording.lock().unwrap() {
+            return None;
+        }
+        let recorder_opt = self.recorder.lock().unwrap();
+        if let Some(rec) = recorder_opt.as_ref() {
+            match rec.drain() {
+                Ok(samples) => Some(samples),
+                Err(e) => {
+                    error!("drain() failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn consecutive_silence_frames(&self) -> usize {
+        let recorder_opt = self.recorder.lock().unwrap();
+        if let Some(rec) = recorder_opt.as_ref() {
+            return rec.consecutive_silence_frames();
+        }
+        0
+    }
+
     pub fn is_recording(&self) -> bool {
         matches!(
             *self.state.lock().unwrap(),

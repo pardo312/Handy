@@ -10,19 +10,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install dependencies
 bun install
 
-# Run in development mode
-bun run tauri dev
-# If cmake error on macOS:
-CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri dev
-
-# Build for production
-bun run tauri build
-
 # Linting and formatting (run before committing)
 bun run lint              # ESLint for frontend
 bun run lint:fix          # ESLint with auto-fix
 bun run format            # Prettier + cargo fmt
 bun run format:check      # Check formatting without changes
+```
+
+### Running (Windows)
+
+**Additional prerequisites:** [LLVM](https://llvm.org/), [Vulkan SDK](https://vulkan.lunarg.com/), [CMake](https://cmake.org/)
+
+```bash
+winget install LLVM.LLVM
+winget install KhronosGroup.VulkanSDK
+winget install Kitware.CMake
+```
+
+After installing, restart your terminal, then:
+
+```bash
+export LIBCLANG_PATH="C:\Program Files\LLVM\bin"
+export VULKAN_SDK="C:\VulkanSDK\<version>"
+export PATH="$PATH:/c/Program Files/CMake/bin"
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+export CARGO_TARGET_DIR="C:\tmp\handy-target"
+
+bun run tauri dev       # Development
+bun run tauri build     # Production
+```
+
+`CARGO_TARGET_DIR` uses a short path to avoid Windows 260-char path limit issues during whisper-rs compilation.
+
+### Running (macOS)
+
+```bash
+# If cmake policy error:
+CMAKE_POLICY_VERSION_MINIMUM=3.5 bun run tauri dev
+
+# Otherwise:
+bun run tauri dev       # Development
+bun run tauri build     # Production
 ```
 
 **Model Setup (Required for Development):**
