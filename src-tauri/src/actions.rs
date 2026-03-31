@@ -702,6 +702,11 @@ fn run_dictation_loop(
     }
 
     active.store(false, Ordering::SeqCst);
+
+    if let Some(samples) = rm.drain_samples() {
+        dictate_chunk(&app, &tm, samples, !first_chunk);
+    }
+
     let _ = rm.stop_recording(&binding_id);
     utils::hide_recording_overlay(&app);
     change_tray_icon(&app, TrayIconState::Idle);
