@@ -191,6 +191,14 @@
       "pushToTalk": {
         "label": "Push To Talk",
         "description": "Hold to record, release to stop"
+      },
+      "dictationMode": {
+        "label": "Dictation Mode",
+        "description": "Continuously transcribe and paste text as you speak. Silence triggers each chunk. Incompatible with Push To Talk."
+      },
+      "dictationSilence": {
+        "title": "Silence Threshold",
+        "description": "How long to wait after you stop speaking before transcribing the current chunk"
       }
     },
     "models": {

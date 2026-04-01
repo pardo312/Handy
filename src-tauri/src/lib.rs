@@ -372,6 +372,8 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_ort_accelerator_setting,
             shortcut::change_whisper_gpu_device,
             shortcut::get_available_accelerators,
+            shortcut::change_dictation_mode_setting,
+            shortcut::change_dictation_silence_ms_setting,
             shortcut::handy_keys::start_handy_keys_recording,
             shortcut::handy_keys::stop_handy_keys_recording,
             trigger_update_check,

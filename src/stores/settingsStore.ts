@@ -155,6 +155,10 @@ const settingUpdaters: {
     commands.changeWhisperGpuDevice(value as number),
   extra_recording_buffer_ms: (value) =>
     commands.changeExtraRecordingBufferSetting(value as number),
+  dictation_mode: (value) =>
+    commands.changeDictationModeSetting(value as boolean),
+  dictation_silence_ms: (value) =>
+    commands.changeDictationSilenceMsSetting(value as number),
 };
 
 export const useSettingsStore = create<SettingsStore>()(

@@ -14,6 +14,7 @@ export const PushToTalk: React.FC<PushToTalkProps> = React.memo(
     const { getSetting, updateSetting, isUpdating } = useSettings();
 
     const pttEnabled = getSetting("push_to_talk") || false;
+    const dictationMode = getSetting("dictation_mode") || false;
 
     return (
       <ToggleSwitch
@@ -24,6 +25,7 @@ export const PushToTalk: React.FC<PushToTalkProps> = React.memo(
         description={t("settings.general.pushToTalk.description")}
         descriptionMode={descriptionMode}
         grouped={grouped}
+        disabled={dictationMode}
       />
     );
   },

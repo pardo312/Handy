@@ -1148,3 +1148,24 @@ pub fn change_whisper_gpu_device(app: AppHandle, device: i32) -> Result<(), Stri
 pub fn get_available_accelerators() -> crate::managers::transcription::AvailableAccelerators {
     crate::managers::transcription::get_available_accelerators()
 }
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_dictation_mode_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.dictation_mode = enabled;
+    if enabled {
+        settings.push_to_talk = false;
+    }
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_dictation_silence_ms_setting(app: AppHandle, ms: u64) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.dictation_silence_ms = ms;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
